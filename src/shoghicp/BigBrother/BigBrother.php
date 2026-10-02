@@ -33,6 +33,12 @@ use shoghicp\BigBrother\tasks\GeneratePrivateKey;
 
 class BigBrother extends PluginBase implements Listener{
 
+	/**
+	 * MCPE protocols bridged by the bundled PC translator (MPMPESCore / Genisys lineage).
+	 * @var int[]
+	 */
+	public static $SUPPORTED_PROTOCOLS = [20, 34, 37, 38, 39, 45, 46, 60, 70, 81, 82, 83, 90, 91];
+
 	/** @var ServerThread */
 	private $thread;
 	private $internalQueue;
@@ -53,8 +59,28 @@ class BigBrother extends PluginBase implements Listener{
 	/** @var Translator */
 	protected $translator;
 
+	/**
+	 * @var BigBrother|null
+	 */
+	private static $instance = null;
+
+	/**
+	 * @return BigBrother|null
+	 */
+	public static function getInstance(){
+		return self::$instance;
+	}
+
+	/**
+	 * @return ProtocolInterface|null
+	 */
+	public function getInterface(){
+		return $this->interface;
+	}
+
 	public function onLoad(){
 
+		self::$instance = $this;
 		class_exists("phpseclib\\Math\\BigInteger", true);
 		class_exists("phpseclib\\Crypt\\Random", true);
 		class_exists("phpseclib\\Crypt\\Base", true);
@@ -78,7 +104,7 @@ class BigBrother extends PluginBase implements Listener{
 			$this->getLogger()->warning("No motd has been set. The server description will be empty.");
 		}
 
-		if(Info::CURRENT_PROTOCOL === 20){
+		if(in_array(Info::CURRENT_PROTOCOL, self::$SUPPORTED_PROTOCOLS, true)){
 			$this->translator = new Translator_20();
 		}else{
 			$this->getLogger()->critical("Couldn't find a protocol translator for #".Info::CURRENT_PROTOCOL .", disabling plugin");
@@ -108,8 +134,9 @@ class BigBrother extends PluginBase implements Listener{
 	}
 
 	protected function enableServer(){
-		$this->externalQueue = new \Threaded;
-		$this->internalQueue = new \Threaded;
+		//pmmpthread 6.x: ThreadSafe is not array-accessible, queues must be Volatile
+		$this->externalQueue = new \Volatile;
+		$this->internalQueue = new \Volatile;
 		$port = (int) $this->getConfig()->get("port");
 		$interface = $this->getConfig()->get("interface");
 		$this->getLogger()->info("Starting Minecraft: PC server on ".($interface === "0.0.0.0" ? "*" : $interface).":$port version ".MCInfo::VERSION);

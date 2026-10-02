@@ -55,10 +55,10 @@ class Binary extends \pocketmine\utils\Binary{
 				case 5:
 					/** @var \pocketmine\item\Item $item */
 					$item = $d["value"];
-					if($item->getID() === 0){
+					if($item->getId() === 0){
 						$m .= self::writeShort(-1);
 					}else{
-						$m .= self::writeShort($item->getID());
+						$m .= self::writeShort($item->getId());
 						$m .= self::writeByte($item->getCount());
 						$m .= self::writeShort($item->getDamage());
 						$m .= self::writeShort(-1);
@@ -81,7 +81,7 @@ class Binary extends \pocketmine\utils\Binary{
 		$shift = 0;
 
 		while(true){
-			$c = ord($buffer{$offset++});
+			$c = ord($buffer[$offset++]);
 			$number |= ($c & 0x7f) << $shift;
 			$shift += 7;
 			if(($c & 0x80) === 0x00){

@@ -22,8 +22,9 @@ use pocketmine\network\protocol\ContainerClosePacket;
 use pocketmine\network\protocol\DataPacket;
 use pocketmine\network\protocol\Info;
 use pocketmine\network\protocol\InteractPacket;
-use pocketmine\network\protocol\MessagePacket;
+use pocketmine\network\protocol\TextPacket;
 use pocketmine\network\protocol\MovePlayerPacket;
+use pocketmine\network\protocol\PlayerActionPacket;
 use pocketmine\network\protocol\RemoveBlockPacket;
 use pocketmine\network\protocol\RespawnPacket;
 use pocketmine\network\protocol\UseItemPacket;
@@ -61,7 +62,8 @@ class Translator_20 implements Translator{
 			// TODO: move to Info
 
 			case 0x01: //CTSChatPacket
-				$pk = new MessagePacket();
+				$pk = new TextPacket();
+				$pk->type = TextPacket::TYPE_CHAT;
 				$pk->source = "";
 				$pk->message = $packet->message;
 				return $pk;
@@ -103,28 +105,84 @@ class Translator_20 implements Translator{
 				return $pk;
 
 			case 0x07: //PlayerDiggingPacket
-				if($packet->status === 2 or ($player->getGamemode() === 1 and $packet->status === 0)){ //Finished digging
+				//1.8 digging statuses -> MCPE:
+				//  0 = start digging  -> PlayerActionPacket ACTION_START_BREAK
+				//  1 = cancel digging -> PlayerActionPacket ACTION_ABORT_BREAK
+				//  2 = finished       -> RemoveBlockPacket (core's real dig path)
+				//Creative clients only send status 0 for instant breaks, so both
+				//packets are emitted there.
+				$packets = [];
+				if($packet->status === 0){
+					$pa = new PlayerActionPacket();
+					$pa->action = PlayerActionPacket::ACTION_START_BREAK;
+					$pa->eid = 0;
+					$pa->x = $packet->x;
+					$pa->y = $packet->y;
+					$pa->z = $packet->z;
+					$pa->face = $packet->face;
+					$packets[] = $pa;
+					if($player->getGamemode() !== 1){
+						return $pa; //survival: block only breaks on status 2
+					}
+				}elseif($packet->status === 1){
+					$pk = new PlayerActionPacket();
+					$pk->action = PlayerActionPacket::ACTION_ABORT_BREAK;
+					$pk->eid = 0;
+					$pk->x = $packet->x;
+					$pk->y = $packet->y;
+					$pk->z = $packet->z;
+					$pk->face = $packet->face;
+					return $pk;
+				}
+
+				if($packet->status === 2 or ($player->getGamemode() === 1 and $packet->status === 0)){
 					$pk = new RemoveBlockPacket();
 					$pk->eid = 0;
 					$pk->x = $packet->x;
 					$pk->y = $packet->y;
 					$pk->z = $packet->z;
-					return $pk;
+					$packets[] = $pk;
 				}
-				return null;
+				return count($packets) > 0 ? $packets : null;
 
 			case 0x08; //PlayerBlockPlacementPacket
 				$pk = new UseItemPacket();
-				$pk->x = $packet->x;
-				$pk->y = $packet->y;
-				$pk->z = $packet->z;
-				$pk->face = $packet->direction;
-				$pk->item = $packet->heldItem->getID();
+				//1.8 sends x=y=z=-1 / face=255 when using an item on air; MCPE
+				//protocol 70 expects face=0xff with a normalised aim vector.
+				if($packet->direction === 0xff or $packet->direction === 255){
+					$pk->x = 0;
+					$pk->y = 0;
+					$pk->z = 0;
+					$pk->face = 0xff;
+				}else{
+					$pk->x = $packet->x;
+					$pk->y = $packet->y;
+					$pk->z = $packet->z;
+					$pk->face = $packet->direction;
+				}
+				$pk->item = $packet->heldItem->getId();
 				$pk->meta = $packet->heldItem->getDamage();
 				$pk->eid = 0;
 				$pk->fx = $packet->cursorX / 16;
 				$pk->fy = $packet->cursorY / 16;
 				$pk->fz = $packet->cursorZ / 16;
+				$pk->posX = $pk->posY = $pk->posZ = 0;
+				//Player::handleDataPacket() calls decodeAdditional() on this packet,
+				//which re-reads slot+item from the buffer - so pre-fill it in the
+				//MCPE slot format (int slot, then short id / byte count / short
+				//damage / lshort nbtLen) to keep the decoded values consistent.
+				$pk->slot = -1;
+				$buffer = "";
+				$buffer .= \pocketmine\utils\Binary::writeInt(-1);
+				if($packet->heldItem->getId() === 0){
+					$buffer .= \pocketmine\utils\Binary::writeShort(0);
+				}else{
+					$buffer .= \pocketmine\utils\Binary::writeShort($packet->heldItem->getId());
+					$buffer .= chr($packet->heldItem->getCount());
+					$buffer .= \pocketmine\utils\Binary::writeShort($packet->heldItem->getDamage());
+					$buffer .= \pocketmine\utils\Binary::writeLShort(0);
+				}
+				$pk->setBuffer($buffer);
 				return $pk;
 
 			case 0x0d: //CTSCloseWindowPacket
@@ -152,13 +210,19 @@ class Translator_20 implements Translator{
 		switch($packet->pid()){
 
 			case Info::UPDATE_BLOCK_PACKET:
-				$pk = new BlockChangePacket();
-				$pk->x = $packet->x;
-				$pk->y = $packet->y;
-				$pk->z = $packet->z;
-				$pk->blockId = $packet->block;
-				$pk->blockMeta = $packet->meta;
-				return $pk;
+				//MPMPESCore (protocol 70) batches block updates: each record is
+				//[x, z, y, blockId, blockData, flags]
+				$packets = [];
+				foreach($packet->records as $r){
+					$pk = new BlockChangePacket();
+					$pk->x = $r[0];
+					$pk->y = $r[2];
+					$pk->z = $r[1];
+					$pk->blockId = $r[3];
+					$pk->blockMeta = $r[4];
+					$packets[] = $pk;
+				}
+				return count($packets) > 0 ? $packets : null;
 
 			case Info::START_GAME_PACKET:
 				$packets = [];
@@ -214,7 +278,7 @@ class Translator_20 implements Translator{
 				$pk->saturation = 5;
 				return $pk;
 
-			case Info::MESSAGE_PACKET:
+			case Info::TEXT_PACKET:
 				$pk = new STCChatPacket();
 
 				$pk->message = TextFormat::toJSON($packet->message);

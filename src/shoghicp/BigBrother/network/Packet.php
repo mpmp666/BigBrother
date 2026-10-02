@@ -36,7 +36,7 @@ abstract class Packet extends \stdClass{
 
 		$buffer = "";
 		for(; $len > 0; --$len, ++$this->offset){
-			$buffer .= @$this->buffer{$this->offset};
+			$buffer .= @$this->buffer[$this->offset];
 		}
 
 		return $buffer;
@@ -54,17 +54,21 @@ abstract class Packet extends \stdClass{
 		$int1 = $this->getInt();
 		$int2 = $this->getInt();
 
+		//1.8 packs Position as x[26] | y[12] | z[26] big-endian into one long.
+		//int1 holds x and the TOP 6 bits of y; int2 holds the BOTTOM 6 bits of y
+		//(in its top 6 bits) and z. (Upstream BigBrother mis-combined these and
+		//sign-extended y as if it were 6 bits, corrupting y for any value > 31.)
 		$x = $int1 >> 6;
-		$y = ((($int1 & 0x3F) << 2) | ($int2 & 0xFCFFFFFF) >> 26);
+		$y = (($int1 & 0x3F) << 6) | (($int2 >> 26) & 0x3F);
 		$z = $int2 & 0x3FFFFFF;
 
 		if(PHP_INT_MAX > 0x7FFFFFFF){
 			$x = $x << 38 >> 38;
-			$y = $y << 58 >> 58;
+			$y = $y << 52 >> 52;
 			$z = $z << 38 >> 38;
 		}else{
 			$x = $x << 6 >> 6;
-			$y = $y << 26 >> 26;
+			$y = $y << 20 >> 20;
 			$z = $z << 6 >> 6;
 		}
 	}
@@ -81,28 +85,27 @@ abstract class Packet extends \stdClass{
 	 * @return Item
 	 */
 	protected function getSlot(){
-		$itemId = $this->getShort();
+		//must be a SIGNED read: an empty hand is -1, which an unsigned short
+		//would report as 65535 and then count/damage bytes would be misread
+		$itemId = Binary::readSignedShort($this->get(2));
 		if($itemId === -1){ //Empty
 			return Item::get(Item::AIR, 0, 0);
 		}else{
 			$count = $this->getByte();
 			$damage = $this->getShort();
-			$len = $this->getShort();
-			if($len > 0){
-				$nbt = $this->get($len);
-			}
+			//1.8 slot format has NO NBT-length field (that is 1.7); the plugin
+			//also never sends NBT on the PC side, so nothing more to read.
 			return Item::get($itemId, $damage, $count);
 		}
 	}
 
 	protected function putSlot(Item $item){
-		if($item->getID() === 0){
+		if($item->getId() === 0){
 			$this->putShort(-1);
 		}else{
-			$this->putShort($item->getID());
+			$this->putShort($item->getId());
 			$this->putByte($item->getCount());
 			$this->putShort($item->getDamage());
-			$this->putShort(-1);
 		}
 	}
 
@@ -119,7 +122,7 @@ abstract class Packet extends \stdClass{
 	}
 
 	protected function getByte(){
-		return ord($this->buffer{$this->offset++});
+		return ord($this->buffer[$this->offset++]);
 	}
 
 	protected function getString(){
@@ -131,7 +134,7 @@ abstract class Packet extends \stdClass{
 	}
 
 	protected function feof(){
-		return !isset($this->buffer{$this->offset});
+		return !isset($this->buffer[$this->offset]);
 	}
 
 	protected function put($str){

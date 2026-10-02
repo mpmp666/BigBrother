@@ -105,6 +105,10 @@ class ServerManager{
 
 		$this->logger = $this->thread->getLogger();
 		$this->fp = $this->thread->getInternalSocket();
+		//pmmpthread 6.x: resources cannot cross the thread boundary, so the
+		//socket-pair wakeup channel is unavailable inside this thread. The main
+		//thread notifies us through the queue instead, which we poll below.
+		$this->fp = null;
 
 		if($interface === ""){
 			$interface = "0.0.0.0";
@@ -118,15 +122,19 @@ class ServerManager{
 		}
 
 		$this->sockets[-1] = $this->socket;
-		$this->sockets[0] = $this->fp;
+		if(is_resource($this->fp)){
+			$this->sockets[0] = $this->fp;
+		}
 
 		$this->process();
 	}
 
 	protected function processPacket(){
-		@fread($this->fp, 1);
+		if(is_resource($this->fp)){
+			@fread($this->fp, 1);
+		}
 		if(strlen($packet = $this->thread->readMainToThreadPacket()) > 0){
-			$pid = ord($packet{0});
+			$pid = ord($packet[0]);
 
 			$buffer = substr($packet, 1);
 
@@ -195,7 +203,11 @@ class ServerManager{
 			$sockets = $this->sockets;
 			$write = null;
 			$except = null;
-			if(@stream_select($sockets, $write, $except, null) > 0){
+			//(0s timeout) poll every 20ms so queued main-thread packets are still
+			//processed promptly even without the socket wakeup channel.
+			$sec = 0;
+			$usec = 20000;
+			if(@stream_select($sockets, $write, $except, $sec, $usec) > 0){
 				if(isset($sockets[-1])){
 					unset($sockets[-1]);
 					if($connection = stream_socket_accept($this->socket, 0)){
@@ -220,6 +232,13 @@ class ServerManager{
 					}
 				}
 			}
+
+			//Always drain the main-thread queue: with no socket wakeup channel we
+			//cannot rely on stream_select() telling us a packet arrived.
+			//NOTE: session sockets are BLOCKING, so they must only be read when
+			//stream_select() reports them ready - never unconditionally, or this
+			//thread would hang on fread() and stop delivering packets.
+			while($this->processPacket()){}
 		}
 	}
 

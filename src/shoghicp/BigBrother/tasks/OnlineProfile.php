@@ -20,6 +20,7 @@ namespace shoghicp\BigBrother\tasks;
 use pocketmine\scheduler\AsyncTask;
 use pocketmine\Server;
 use pocketmine\utils\Utils;
+use shoghicp\BigBrother\BigBrother;
 use shoghicp\BigBrother\DesktopPlayer;
 
 class OnlineProfile extends AsyncTask{
@@ -64,15 +65,16 @@ class OnlineProfile extends AsyncTask{
 	}
 
 	public function onCompletion(Server $server){
-		foreach($server->getOnlinePlayers() as $clientID => $player){
-			if($player instanceof DesktopPlayer and $clientID === $this->clientID){
-				$result = $this->getResult();
-				if(is_array($result) and isset($result["id"])){
-					$player->bigBrother_authenticate($this->username, $result["id"], $result["properties"]);
-				}else{
-					$player->bigBrother_authenticate($this->username, "00000000000040008000000000000000", null);
-				}
-				break;
+		//Resolve the player through the plugin's own session table: MPMPESCore's
+		//Server::getOnlinePlayers() does not include DesktopPlayers during login.
+		$interface = BigBrother::getInstance()->getInterface();
+		$player = $interface !== null ? $interface->getPlayerByClientID($this->clientID) : null;
+		if($player instanceof DesktopPlayer){
+			$result = $this->getResult();
+			if(is_array($result) and isset($result["id"])){
+				$player->bigBrother_authenticate($this->username, $result["id"], $result["properties"]);
+			}else{
+				$player->bigBrother_authenticate($this->username, "00000000000040008000000000000000", null);
 			}
 		}
 	}

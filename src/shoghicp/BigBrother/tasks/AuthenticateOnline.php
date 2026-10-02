@@ -46,7 +46,7 @@ class AuthenticateOnline extends AsyncTask{
 				if(is_array($result) and isset($result["id"])){
 					$player->bigBrother_authenticate($this->username, $result["id"], $result["properties"]);
 				}else{
-					$player->close("", "User not premium");
+					$player->bigBrother_close("", "User not premium");
 				}
 				break;
 			}

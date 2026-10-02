@@ -26,9 +26,9 @@ class ServerThread extends Thread{
 	/** @var \ThreadedLogger */
 	protected $logger;
 	protected $loader;
-	protected $data = [];
+	protected $data = "";
 
-	public $loadPaths = [];
+	public $loadPaths;
 
 	protected $shutdown;
 
@@ -37,8 +37,27 @@ class ServerThread extends Thread{
 	/** @var \Threaded */
 	protected $internalQueue;
 
-	protected $externalSocket;
-	protected $internalSocket;
+	/** @var int socket id used to look up the non-thread-safe resource */
+	protected $externalSocketId = -1;
+	/** @var int socket id used to look up the non-thread-safe resource */
+	protected $internalSocketId = -1;
+
+	/**
+	 * pthreads v6 refuses to store raw resources on thread-safe objects, so the
+	 * actual stream handles live in a plain static map keyed by an integer id.
+	 * @var resource[]
+	 */
+	protected static $sockets = [];
+	/** @var int */
+	protected static $nextSocketId = 0;
+
+	/**
+	 * @param int $id
+	 * @return resource|null
+	 */
+	public static function getSocketById($id){
+		return isset(self::$sockets[$id]) ? self::$sockets[$id] : null;
+	}
 
 	/**
 	 * @param \Threaded       $externalQueue
@@ -52,7 +71,7 @@ class ServerThread extends Thread{
 	 *
 	 * @throws \Exception
 	 */
-	public function __construct(\Threaded $externalQueue, \Threaded $internalQueue, \ThreadedLogger $logger, \ClassLoader $loader, $port, $interface = "0.0.0.0", $motd = "Minecraft: PE server", $icon = null){
+	public function __construct($externalQueue, $internalQueue, \ThreadedLogger $logger, \ClassLoader $loader, $port, $interface = "0.0.0.0", $motd = "Minecraft: PE server", $icon = null){
 		$this->port = (int) $port;
 		if($port < 1 or $port > 65536){
 			throw new \Exception("Invalid port range");
@@ -68,17 +87,24 @@ class ServerThread extends Thread{
 		$loadPaths = [];
 		$this->addDependency($loadPaths, new \ReflectionClass($logger));
 		$this->addDependency($loadPaths, new \ReflectionClass($loader));
-		$this->loadPaths = array_reverse($loadPaths);
+		//pthreads v6 forbids assigning raw arrays to properties of thread-safe classes
+		$this->loadPaths = serialize(array_reverse($loadPaths));
 		$this->shutdown = false;
 
 		if(($sockets = stream_socket_pair((strtoupper(substr(PHP_OS, 0, 3)) === 'WIN' ? STREAM_PF_INET : STREAM_PF_UNIX), STREAM_SOCK_STREAM, STREAM_IPPROTO_IP)) === false){
 			throw new \Exception("Could not create IPC streams. Reason: ".socket_strerror(socket_last_error()));
 		}
 
-		$this->internalSocket = $sockets[0];
-		stream_set_blocking($this->internalSocket, 0);
-		$this->externalSocket = $sockets[1];
-		stream_set_blocking($this->externalSocket, 0);
+		$internalId = self::$nextSocketId++;
+		$externalId = self::$nextSocketId++;
+		self::$sockets[$internalId] = $sockets[0];
+		self::$sockets[$externalId] = $sockets[1];
+
+		$this->internalSocketId = $internalId;
+		$this->externalSocketId = $externalId;
+
+		stream_set_blocking($sockets[0], 0);
+		stream_set_blocking($sockets[1], 0);
 
 		$this->externalQueue = $externalQueue;
 		$this->internalQueue = $internalQueue;
@@ -107,7 +133,11 @@ class ServerThread extends Thread{
 	public function shutdown(){
 		$this->lock();
 		$this->shutdown = true;
-		socket_close($this->internalSocket);
+		$socket = self::getSocketById($this->internalSocketId);
+		if(is_resource($socket)){
+			@fclose($socket);
+			unset(self::$sockets[$this->internalSocketId]);
+		}
 		$this->unlock();
 	}
 
@@ -141,12 +171,15 @@ class ServerThread extends Thread{
 	}
 
 	public function getInternalSocket(){
-		return $this->internalSocket;
+		return self::getSocketById($this->internalSocketId);
 	}
 
 	public function pushMainToThreadPacket($str){
 		$this->internalQueue[] = $str;
-		@fwrite($this->externalSocket, "\xff", 1); //Notify
+		$socket = self::getSocketById($this->externalSocketId);
+		if(is_resource($socket)){
+			@fwrite($socket, "\xff", 1); //Notify
+		}
 	}
 
 	public function readMainToThreadPacket(){
@@ -161,9 +194,9 @@ class ServerThread extends Thread{
 		return $this->externalQueue->shift();
 	}
 
-	public function run(){
+	public function run() : void{
 		//Load removed dependencies, can't use require_once()
-		foreach($this->loadPaths as $name => $path){
+		foreach(unserialize($this->loadPaths) as $name => $path){
 			if(!class_exists($name, false) and !interface_exists($name, false)){
 				require($path);
 			}

@@ -36,7 +36,8 @@ class GeneratePrivateKey extends AsyncTask{
 		$loadPaths = [];
 		$this->addDependency($loadPaths, new \ReflectionClass($logger));
 		$this->addDependency($loadPaths, new \ReflectionClass($loader));
-		$this->loadPaths = array_reverse($loadPaths);
+		//pthreads v6 forbids assigning raw arrays to properties of thread-safe classes
+		$this->loadPaths = serialize(array_reverse($loadPaths));
 	}
 
 	protected function addDependency(array &$loadPaths, \ReflectionClass $dep){
@@ -54,7 +55,7 @@ class GeneratePrivateKey extends AsyncTask{
 	}
 
 	public function onRun(){
-		foreach($this->loadPaths as $name => $path){
+		foreach(unserialize($this->loadPaths) as $name => $path){
 			if(!class_exists($name, false) and !interface_exists($name, false)){
 				require($path);
 			}

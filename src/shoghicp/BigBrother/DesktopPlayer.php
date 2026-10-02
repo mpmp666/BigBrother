@@ -25,6 +25,7 @@ use pocketmine\level\format\leveldb\Chunk as LevelDBChunk;
 use pocketmine\level\format\generic\EmptyChunkSection;
 use pocketmine\level\Level;
 use pocketmine\level\Position;
+use pocketmine\network\protocol\FullChunkDataPacket;
 use pocketmine\network\protocol\Info;
 use pocketmine\network\protocol\LoginPacket;
 use pocketmine\network\protocol\SetEntityMotionPacket;
@@ -34,6 +35,7 @@ use pocketmine\Player;
 use pocketmine\scheduler\CallbackTask;
 use pocketmine\Server;
 use pocketmine\tile\Spawnable;
+use pocketmine\utils\UUID;
 use pocketmine\utils\TextFormat;
 use pocketmine\utils\Utils;
 use shoghicp\BigBrother\network\Packet;
@@ -59,6 +61,9 @@ use shoghicp\BigBrother\utils\Binary;
 class DesktopPlayer extends Player{
 
 	private $bigBrother_status = 0; //0 = log in, 1 = playing
+	private $bigBrother_closed = false;
+	private $bigBrother_registered = false;
+	private $bigBrother_identifier = "";
 	protected $bigBrother_uuid;
 	protected $bigBrother_formatedUUID;
 	protected $bigBrother_properties = [];
@@ -70,10 +75,21 @@ class DesktopPlayer extends Player{
 	protected $bigBrother_titleBarLevel;
 	/** @var ProtocolInterface */
 	protected $interface;
+	/** @var \pocketmine\scheduler\TaskHandler[] */
+	protected $bigBrother_tasks = [];
 
 	public function __construct(SourceInterface $interface, $clientID, $address, $port){
 		parent::__construct($interface, $clientID, $address, $port);
+		$this->bigBrother_identifier = (string) $clientID;
 		$this->setRemoveFormat(false);
+	}
+
+	/**
+	 * The identifier string this session was created with ("<id>:<ip>:<port>").
+	 * @return string
+	 */
+	public function bigBrother_getIdentifier(){
+		return $this->bigBrother_identifier;
 	}
 
 	public function bigBrother_updateTitleBar(){
@@ -100,7 +116,7 @@ class DesktopPlayer extends Player{
 				11 => ["type" => 0, "value" => 1]
 			];
 			$this->putRawPacket($pk);
-			$this->tasks[] = $this->getServer()->getScheduler()->scheduleDelayedRepeatingTask(new CallbackTask([$this, "bigBrother_updateTitleBar"]), 5, 20);
+			$this->bigBrother_tasks[] = $this->getServer()->getScheduler()->scheduleDelayedRepeatingTask(new CallbackTask([$this, "bigBrother_updateTitleBar"]), 5, 20);
 		}else{
 			$pk = new EntityTeleportPacket();
 			$pk->eid = $this->bigBrother_titleBarID;
@@ -158,7 +174,7 @@ class DesktopPlayer extends Player{
 		$this->putRawPacket($pk);
 	}
 
-	public function sendChunk($x, $z, $payload){
+	public function sendChunk($x, $z, $payload, $ordering = FullChunkDataPacket::ORDER_COLUMNS){
 
 	}
 
@@ -188,7 +204,7 @@ class DesktopPlayer extends Player{
 			unset($this->loadQueue[$index]);
 			$this->usedChunks[$index] = true;
 
-			$this->level->useChunk($X, $Z, $this);
+			$this->level->registerChunkLoader($this, $X, $Z);
 			$chunk = $this->level->getChunk($X, $Z);
 			if($chunk instanceof AnvilChunk){
 				$this->kick("Playing on Anvil worlds is not yet implemented");
@@ -276,36 +292,44 @@ class DesktopPlayer extends Player{
 	public function spawnTo(Player $player){
 		if($player instanceof DesktopPlayer){
 			if($this !== $player and $this->spawned === true and $player->getLevel() === $this->getLevel() and $player->canSee($this)){
-				$this->hasSpawned[$player->getID()] = $player;
+				$this->hasSpawned[$player->getLoaderId()] = $player;
 				$pk = new SpawnPlayerPacket();
 				if($player->getRemoveFormat()){
-					$pk->name = TextFormat::clean($this->nameTag);
+					$pk->name = TextFormat::clean($this->getNameTag());
 				}else{
-					$pk->name = $this->nameTag;
+					$pk->name = $this->getNameTag();
 				}
-				$pk->eid = $this->getID();
+				$pk->eid = $this->getId();
 				$pk->uuid = $this->bigBrother_formatedUUID;
 				$pk->x = $this->x;
-				$pk->z = $this->y;
-				$pk->y = $this->z;
+				$pk->y = $this->y;
+				$pk->z = $this->z;
 				$pk->yaw = $this->yaw;
 				$pk->pitch = $this->pitch;
-				$pk->item = $this->inventory->getItemInHand()->getID();
-				$pk->metadata = $this->getData();
+				$pk->item = $this->inventory->getItemInHand()->getId();
+				//MPMPESCore dataProperties is [id => [type, value]]; the PC
+				//metadata writer expects [id => ["type" => t, "value" => v]]
+				$meta = [];
+				foreach($this->dataProperties as $id => $d){
+					if($d[0] <= 6){ //byte..pos map 1:1 onto PC 1.8 metadata types
+						$meta[$id] = ["type" => $d[0], "value" => $d[1]];
+					}
+				}
+				$pk->metadata = $meta;
 				$pk->data = $this->bigBrother_properties;
 				$player->putRawPacket($pk);
 
 				$pk = new EntityTeleportPacket();
-				$pk->eid = $this->getID();
+				$pk->eid = $this->getId();
 				$pk->x = $this->x;
-				$pk->z = $this->y;
-				$pk->y = $this->z;
+				$pk->y = $this->y;
+				$pk->z = $this->z;
 				$pk->yaw = $this->yaw;
 				$pk->pitch = $this->pitch;
 				$player->putRawPacket($pk);
 
 				$pk = new SetEntityMotionPacket();
-				$pk->eid = $this->getID();
+				$pk->eid = $this->getId();
 				$pk->speedX = $this->motionX;
 				$pk->speedY = $this->motionY;
 				$pk->speedZ = $this->motionZ;
@@ -334,8 +358,23 @@ class DesktopPlayer extends Player{
 				$this->bigBrother_properties = $onlineModeData;
 			}
 
-			$this->tasks[] = $this->server->getScheduler()->scheduleDelayedRepeatingTask(new CallbackTask([$this, "bigBrother_sendKeepAlive"]), 180, 2);
+			$this->bigBrother_tasks[] = $this->server->getScheduler()->scheduleDelayedRepeatingTask(new CallbackTask([$this, "bigBrother_sendKeepAlive"]), 180, 2);
 			$this->server->getScheduler()->scheduleDelayedTask(new CallbackTask([$this, "bigBrother_authenticationCallback"], [$username]), 1);
+
+			//Now that a UUID exists the player can be registered in MPMPESCore's
+			//online-player list (Server::getOnlinePlayers()), which broadcasts and
+			//queries iterate over.
+			if(!$this->bigBrother_registered){
+				$this->bigBrother_registered = true;
+				try{
+					$this->uuid = UUID::fromString($this->bigBrother_formatedUUID);
+					$this->rawUUID = $this->uuid->toBinary();
+				}catch(\Throwable $e){
+					$this->uuid = UUID::fromRandom();
+					$this->rawUUID = $this->uuid->toBinary();
+				}
+				$this->server->addOnlinePlayer($this);
+			}
 		}
 	}
 
@@ -344,7 +383,7 @@ class DesktopPlayer extends Player{
 		$token = $plugin->decryptBinary($packet->verifyToken);
 		$this->interface->enableEncryption($this, $this->bigBrother_secret);
 		if($token !== $this->bigBrother_checkToken){
-			$this->close("", "Invalid check token");
+			$this->bigBrother_close("", "Invalid check token");
 		}else{
 			$task = new AuthenticateOnline($this->clientID, $this->bigBrother_username, Binary::sha1("" . $this->bigBrother_secret . $plugin->getASN1PublicKey()));
 			$this->server->getScheduler()->scheduleAsyncTask($task);
@@ -358,7 +397,26 @@ class DesktopPlayer extends Player{
 		$pk->protocol1 = Info::CURRENT_PROTOCOL;
 		$pk->protocol2 = Info::CURRENT_PROTOCOL;
 		$pk->loginData = "";
+		//Player::handleDataPacket() reads the UUID from the login packet.
+		$pk->clientUUID = $this->uuid;
+		//MPMPESCore rejects logins without a valid 64x32 (or 64x64) RGBA skin.
+		$pk->skin = self::bigBrother_defaultSkin();
+		$pk->skinName = "Standard_Custom";
 		$this->handleDataPacket($pk);
+	}
+
+	/**
+	 * A valid 64x32 RGBA skin. MPMPESCore refuses the login otherwise, and a PC
+	 * client never sends a MCPE skin payload.
+	 *
+	 * @return string
+	 */
+	public static function bigBrother_defaultSkin(){
+		static $skin = null;
+		if($skin === null){
+			$skin = str_repeat("\x00\x00\x00\xff", 64 * 32);
+		}
+		return $skin;
 	}
 
 	public function bigBrother_handleAuthentication(BigBrother $plugin, $username, $onlineMode){
@@ -378,17 +436,30 @@ class DesktopPlayer extends Player{
 
 	}
 
-	public function close($message = "", $reason = "generic reason"){
-		if($this->bigBrother_status === 0){
-			$pk = new LoginDisconnectPacket();
-			$pk->reason = TextFormat::toJSON($reason === "" ? "You have been disconnected." : $reason);
-			$this->putRawPacket($pk);
-		}else{
-			$pk = new PlayDisconnectPacket();
-			$pk->reason = TextFormat::toJSON($reason === "" ? "You have been disconnected." : $reason);
-			$this->putRawPacket($pk);
+	/**
+	 * Player::close() is final in MPMPESCore, so the PC disconnect packet is sent
+	 * from here and the real teardown is delegated to the parent.
+	 */
+	public function bigBrother_close($message = "", $reason = "generic reason"){
+		if(!$this->bigBrother_closed and $this->interface instanceof ProtocolInterface){
+			$this->bigBrother_closed = true;
+			if($this->bigBrother_status === 0){
+				$pk = new LoginDisconnectPacket();
+				$pk->reason = TextFormat::toJSON($reason === "" ? "You have been disconnected." : $reason);
+				$this->putRawPacket($pk);
+			}else{
+				$pk = new PlayDisconnectPacket();
+				$pk->reason = TextFormat::toJSON($reason === "" ? "You have been disconnected." : $reason);
+				$this->putRawPacket($pk);
+			}
 		}
 		parent::close($message, $reason);
+	}
+
+	/**
+	 * MPMPESCore has no handleACK(); the identifier bookkeeping is a no-op here.
+	 */
+	public function handleACK($id){
 	}
 
 	public function bigBrother_setCompression($threshold){

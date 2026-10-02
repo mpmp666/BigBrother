@@ -64,13 +64,41 @@ class ProtocolInterface implements SourceInterface{
 		$this->sessions = new \SplObjectStorage();
 	}
 
+	/**
+	 * Resolve a session by the identifier string passed to the DesktopPlayer
+	 * constructor ("<id>:<address>:<port>"), which is what BigBrother's async
+	 * tasks carry around as $clientID.
+	 *
+	 * @param string $clientID
+	 * @return DesktopPlayer|null
+	 */
+	public function getPlayerByClientID($clientID){
+		foreach($this->sessionsPlayers as $player){
+			if($player->bigBrother_getIdentifier() === (string) $clientID){
+				return $player;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * @return string[]
+	 */
+	public function listClientIDs(){
+		$ids = [];
+		foreach($this->sessionsPlayers as $player){
+			$ids[] = $player->bigBrother_getIdentifier();
+		}
+		return $ids;
+	}
+
 	public function emergencyShutdown(){
 		$this->thread->pushMainToThreadPacket(chr(ServerManager::PACKET_EMERGENCY_SHUTDOWN));
 	}
 
 	public function shutdown(){
 		foreach($this->sessionsPlayers as $player){
-			$player->close(TextFormat::YELLOW . $player->getName() . " has left the game", $this->plugin->getServer()->getProperty("settings.shutdown-message", "Server closed"));
+			$player->bigBrother_close(TextFormat::YELLOW . $player->getName() . " has left the game", $this->plugin->getServer()->getProperty("settings.shutdown-message", "Server closed"));
 		}
 		$this->thread->pushMainToThreadPacket(chr(ServerManager::PACKET_SHUTDOWN));
 	}
@@ -84,7 +112,7 @@ class ProtocolInterface implements SourceInterface{
 			$identifier = $this->sessions[$player];
 			$this->sessions->detach($player);
 			unset($this->sessionsPlayers[$identifier]);
-			$player->close(TextFormat::YELLOW . $player->getName() . " has left the game", "Connection closed");
+			$player->bigBrother_close(TextFormat::YELLOW . $player->getName() . " has left the game", "Connection closed");
 		}else{
 			return;
 		}
@@ -154,7 +182,7 @@ class ProtocolInterface implements SourceInterface{
 	}
 
 	protected function handlePacket(DesktopPlayer $player, $payload){
-		$pid = ord($payload{0});
+		$pid = ord($payload[0]);
 		$offset = 1;
 
 		$status = $player->bigBrother_getStatus();
@@ -205,7 +233,7 @@ class ProtocolInterface implements SourceInterface{
 				$pk->read($payload, $offset);
 				$player->bigBrother_processAuthentication($this->plugin, $pk);
 			}else{
-				$player->close(TextFormat::YELLOW . $player->getName() . " has left the game", "Unexpected packet $pid");
+				$player->bigBrother_close(TextFormat::YELLOW . $player->getName() . " has left the game", "Unexpected packet $pid");
 			}
 		}
 	}
@@ -219,7 +247,7 @@ class ProtocolInterface implements SourceInterface{
 
 		while(strlen($buffer = $this->thread->readThreadToMainPacket()) > 0){
 			$offset = 1;
-			$pid = ord($buffer{0});
+			$pid = ord($buffer[0]);
 
 			if($pid === ServerManager::PACKET_SEND_PACKET){
 				$id = Binary::readInt(substr($buffer, $offset, 4));
@@ -238,7 +266,7 @@ class ProtocolInterface implements SourceInterface{
 				if(isset($this->sessionsPlayers[$id])){
 					continue;
 				}
-				$len = ord($buffer{$offset++});
+				$len = ord($buffer[$offset++]);
 				$address = substr($buffer, $offset, $len);
 				$offset += $len;
 				$port = Binary::readShort(substr($buffer, $offset, 2));
@@ -249,6 +277,7 @@ class ProtocolInterface implements SourceInterface{
 				$this->sessions->attach($player, $id);
 				$this->sessionsPlayers[$id] = $player;
 				$this->plugin->getServer()->addPlayer($identifier, $player);
+				//addOnlinePlayer() is deferred until a UUID exists (see DesktopPlayer::bigBrother_authenticate)
 			}elseif($pid === ServerManager::PACKET_CLOSE_SESSION){
 				$id = Binary::readInt(substr($buffer, $offset, 4));
 				if(!isset($this->sessionsPlayers[$id])){
