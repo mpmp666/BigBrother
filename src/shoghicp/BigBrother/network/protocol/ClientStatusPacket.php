@@ -32,6 +32,6 @@ class ClientStatusPacket extends Packet{
 	}
 
 	public function decode(){
-		$this->actionID = $this->getByte();
+		$this->actionID = $this->getVarInt();
 	}
 }

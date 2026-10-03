@@ -27,6 +27,7 @@ use shoghicp\BigBrother\network\protocol\ClientStatusPacket;
 use shoghicp\BigBrother\network\protocol\CTSChatPacket;
 use shoghicp\BigBrother\network\protocol\CTSCloseWindowPacket;
 use shoghicp\BigBrother\network\protocol\EncryptionResponsePacket;
+use shoghicp\BigBrother\network\protocol\HeldItemChangePacket;
 use shoghicp\BigBrother\network\protocol\LoginStartPacket;
 use shoghicp\BigBrother\network\protocol\PlayerBlockPlacementPacket;
 use shoghicp\BigBrother\network\protocol\PlayerDiggingPacket;
@@ -209,6 +210,9 @@ class ProtocolInterface implements SourceInterface{
 					break;
 				case 0x08:
 					$pk = new PlayerBlockPlacementPacket();
+					break;
+				case 0x09:
+					$pk = new HeldItemChangePacket();
 					break;
 				case 0x0d:
 					$pk = new CTSCloseWindowPacket();

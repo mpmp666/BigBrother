@@ -20,8 +20,10 @@ namespace shoghicp\BigBrother\network\translation;
 use pocketmine\item\Item;
 use pocketmine\network\protocol\ContainerClosePacket;
 use pocketmine\network\protocol\DataPacket;
+use pocketmine\network\protocol\DropItemPacket;
 use pocketmine\network\protocol\Info;
 use pocketmine\network\protocol\InteractPacket;
+use pocketmine\network\protocol\MobEquipmentPacket;
 use pocketmine\network\protocol\TextPacket;
 use pocketmine\network\protocol\MovePlayerPacket;
 use pocketmine\network\protocol\PlayerActionPacket;
@@ -69,15 +71,23 @@ class Translator_20 implements Translator{
 				return $pk;
 
 			case 0x02: //UseEntityPacket
+				//1.8 mouse: 0=interact, 1=attack, 2=interact at -> MCPE:
+				//RIGHT_CLICK=1, LEFT_CLICK=2
 				$pk = new InteractPacket();
 				$pk->target = $packet->target;
-				$pk->action = $packet->mouse;
+				if($packet->mouse === 1){
+					$pk->action = InteractPacket::ACTION_LEFT_CLICK;
+				}else{ //0 or 2 both mean right-click
+					$pk->action = InteractPacket::ACTION_RIGHT_CLICK;
+				}
 				return $pk;
 
 			case 0x04: //PlayerPositionPacket
 				$pk = new MovePlayerPacket();
 				$pk->x = $packet->x;
-				$pk->y = $packet->y;
+				//1.8 position packets carry the FEET y; MCPE MovePlayerPacket
+				//expects the EYE y (core subtracts eye height again).
+				$pk->y = $packet->y + $player->getEyeHeight();
 				$pk->z = $packet->z;
 				$pk->yaw = $player->yaw;
 				$pk->bodyYaw = $player->yaw;
@@ -87,7 +97,7 @@ class Translator_20 implements Translator{
 			case 0x05: //PlayerLookPacket
 				$pk = new MovePlayerPacket();
 				$pk->x = $player->x;
-				$pk->y = $player->y;
+				$pk->y = $player->y + $player->getEyeHeight();
 				$pk->z = $player->z;
 				$pk->yaw = $packet->yaw;
 				$pk->bodyYaw = $packet->yaw;
@@ -97,7 +107,7 @@ class Translator_20 implements Translator{
 			case 0x06: //PlayerPositionAndLookPacket
 				$pk = new MovePlayerPacket();
 				$pk->x = $packet->x;
-				$pk->y = $packet->y;
+				$pk->y = $packet->y + $player->getEyeHeight();
 				$pk->z = $packet->z;
 				$pk->yaw = $packet->yaw;
 				$pk->bodyYaw = $packet->yaw;
@@ -109,8 +119,26 @@ class Translator_20 implements Translator{
 				//  0 = start digging  -> PlayerActionPacket ACTION_START_BREAK
 				//  1 = cancel digging -> PlayerActionPacket ACTION_ABORT_BREAK
 				//  2 = finished       -> RemoveBlockPacket (core's real dig path)
+				//  3 = drop stack     -> DropItemPacket (whole stack)
+				//  4 = drop item      -> DropItemPacket (single item)
 				//Creative clients only send status 0 for instant breaks, so both
 				//packets are emitted there.
+				if($packet->status === 3 or $packet->status === 4){
+					//Q / Ctrl+Q carry no item data on 1.8 - use the held item
+					$inHand = $player->getInventory()->getItemInHand();
+					if($inHand->getId() === 0){
+						return null; //nothing to drop
+					}
+					$pk = new DropItemPacket();
+					$pk->type = 0;
+					if($packet->status === 4 and $inHand->getCount() > 1){
+						$pk->item = clone $inHand;
+						$pk->item->setCount(1);
+					}else{
+						$pk->item = $inHand;
+					}
+					return $pk;
+				}
 				$packets = [];
 				if($packet->status === 0){
 					$pa = new PlayerActionPacket();
@@ -190,14 +218,22 @@ class Translator_20 implements Translator{
 				$pk->windowid = $packet->windowID;
 				return $pk;
 
+			case 0x09: //HeldItemChangePacket - 1.8 hotbar slot switch
+				//The core validates the carried item against inventory contents,
+				//so hand it the actual item present at that hotbar slot.
+				$pk = new MobEquipmentPacket();
+				$pk->eid = 0;
+				$pk->item = $player->getInventory()->getItem($packet->slot);
+				$pk->slot = $packet->slot + 9; //core subtracts 9 to get the real slot
+				$pk->selectedSlot = $packet->slot;
+				return $pk;
+
 			case 0x16: //ClientStatusPacket
-				if($packet->actionID === 0){
-					$pk = new RespawnPacket();
-					$pk->eid = 0;
-					$pk->x = $player->getSpawn()->getX();
-					$pk->y = $player->getSpawn()->getX();
-					$pk->z = $player->getSpawn()->getX();
-					return $pk;
+				if($packet->actionID === 0){ //perform respawn
+					//1.8 clients request respawn after clicking the button on the
+					//death screen; the core never handles an inbound RespawnPacket,
+					//so the DesktopPlayer handles it directly.
+					$player->bigBrother_respawn();
 				}
 				return null;
 
@@ -278,6 +314,48 @@ class Translator_20 implements Translator{
 				$pk->saturation = 5;
 				return $pk;
 
+			case Info::UPDATE_ATTRIBUTES_PACKET:
+				//core sends health/hunger changes through the attribute system
+				//(entityId 0 = the player themself); 1.8 clients need health 0
+				//for the death screen, and hunger for the food bar.
+				if($packet->entityId !== 0){
+					return null;
+				}
+				$health = null;
+				$food = null;
+				foreach($packet->entries as $entry){
+					if($entry->getName() === "generic.health"){
+						$health = $entry->getValue();
+					}elseif($entry->getName() === "player.hunger"){
+						$food = $entry->getValue();
+					}
+				}
+				if($health === null and $food === null){
+					return null;
+				}
+				$pk = new UpdateHealthPacket();
+				$pk->health = $health !== null ? $health : $player->getHealth();
+				$pk->food = $food !== null ? $food : 20;
+				$pk->saturation = 5;
+				return $pk;
+
+			case Info::SET_PLAYER_GAMETYPE_PACKET:
+				$packets = [];
+				$pk = new ChangeGameStatePacket();
+				$pk->reason = 3; //change game mode
+				$pk->value = $packet->gamemode;
+				$packets[] = $pk;
+
+				$pk = new PlayerAbilitiesPacket();
+				$pk->flyingSpeed = 0.05;
+				$pk->walkingSpeed = 0.1;
+				$pk->canFly = ($packet->gamemode & 0x01) > 0;
+				$pk->damageDisabled = ($packet->gamemode & 0x01) > 0;
+				$pk->isFlying = false;
+				$pk->isCreative = ($packet->gamemode & 0x01) > 0;
+				$packets[] = $pk;
+				return $packets;
+
 			case Info::TEXT_PACKET:
 				$pk = new STCChatPacket();
 
@@ -307,7 +385,8 @@ class Translator_20 implements Translator{
 				if($packet->eid === 0){
 					$pk = new PositionAndLookPacket();
 					$pk->x = $packet->x;
-					$pk->y = $packet->y;
+					//MCPE sends the EYE y; 1.8 clients expect the FEET y
+					$pk->y = $packet->y - $player->getEyeHeight();
 					$pk->z = $packet->z;
 					$pk->yaw = $packet->yaw;
 					$pk->pitch = $packet->pitch;
@@ -362,26 +441,23 @@ class Translator_20 implements Translator{
 				}
 				return $packets;
 
-			/*
 			case Info::CONTAINER_CLOSE_PACKET:
 				$pk = new STCCloseWindowPacket();
 				$pk->windowID = $packet->windowid;
-				return $pk;
-
-			case Info::CONTAINER_OPEN_PACKET:
-				$pk = new OpenWindowPacket();
-				$pk->windowID = $packet->windowid;
-				$pk->inventoryType = $packet->type;
-				$pk->windowTitle = "";
-				$pk->slots = $packet->slots;
 				return $pk;
 
 			case Info::CONTAINER_SET_SLOT_PACKET:
 				$pk = new SetSlotPacket();
 				$pk->windowID = $packet->windowid;
 				if($pk->windowID === 0){
-					$pk->slot = $packet->slot + 9;
-				}elseif($pk->windowID === 0x78){
+					//MCPE player inventory: 0-8 hotbar, 9-35 main inventory.
+					//PC 1.8 window 0: 9-35 main inventory, 36-44 hotbar.
+					if($packet->slot < 9){
+						$pk->slot = $packet->slot + 36;
+					}else{
+						$pk->slot = $packet->slot;
+					}
+				}elseif($pk->windowID === 0x78){ //SPECIAL_ARMOR
 					$pk->windowID = 0;
 					$pk->slot = $packet->slot + 5;
 				}else{
@@ -391,27 +467,37 @@ class Translator_20 implements Translator{
 				return $pk;
 
 			case Info::CONTAINER_SET_CONTENT_PACKET:
+				if($packet->windowid === 0x79){ //SPECIAL_CREATIVE
+					//MCPE creative menu contents - PC clients must not see this
+					return null;
+				}
 				$pk = new WindowItemsPacket();
 				$pk->windowID = $packet->windowid;
 				if($pk->windowID === 0 or $pk->windowID === 0x78){
 					$pk->windowID = 0;
+					$inv = $player->getInventory();
+					//PC 1.8 window 0: 0 craft result, 1-4 craft grid, 5-8 armor,
+					//9-35 main inventory, 36-44 hotbar
 					for($i = 0; $i < 5; ++$i){
 						$pk->items[] = Item::get(Item::AIR, 0, 0);
 					}
-					$pk->items[] = $player->getInventory()->getHelmet();
-					$pk->items[] = $player->getInventory()->getChestplate();
-					$pk->items[] = $player->getInventory()->getLeggings();
-					$pk->items[] = $player->getInventory()->getBoots();
-					$slots = $player->getInventory()->getSize();
-					for($i = 0; $i < $slots; ++$i){
-						$pk->items[] = $player->getInventory()->getItem($i);
+					$pk->items[] = $inv->getHelmet();
+					$pk->items[] = $inv->getChestplate();
+					$pk->items[] = $inv->getLeggings();
+					$pk->items[] = $inv->getBoots();
+					//main inventory: MCPE 9-35 -> PC 9-35
+					for($i = 9; $i < 36; ++$i){
+						$pk->items[] = $inv->getItem($i);
+					}
+					//hotbar: MCPE 0-8 -> PC 36-44
+					for($i = 0; $i < 9; ++$i){
+						$pk->items[] = $inv->getItem($i);
 					}
 				}else{
 					$pk->items = $packet->slots;
 				}
 
 				return $pk;
-			*/
 
 			case Info::ADD_ITEM_ENTITY_PACKET:
 				$packets = [];
@@ -421,8 +507,9 @@ class Translator_20 implements Translator{
 				$pk->x = $packet->x;
 				$pk->y = $packet->y;
 				$pk->z = $packet->z;
-				$pk->yaw = $packet->yaw;
-				$pk->pitch = $packet->pitch;
+				//AddItemEntityPacket has no yaw/pitch fields
+				$pk->yaw = 0;
+				$pk->pitch = 0;
 				$packets[] = $pk;
 
 				$pk = new EntityMetadataPacket();

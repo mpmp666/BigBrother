@@ -38,12 +38,17 @@ class SpawnPlayerPacket extends Packet{
 
 	public function encode(){
 		$this->putVarInt($this->eid);
-		$this->putString($this->uuid);
+		//1.8 sends the UUID as 16 raw bytes, NOT a length-prefixed string
+		$hex = str_replace("-", "", $this->uuid);
+		for($i = 0; $i < 16; ++$i){
+			$this->putByte(hexdec(substr($hex, $i * 2, 2)));
+		}
 		$this->putInt(intval($this->x * 32));
 		$this->putInt(intval($this->y * 32));
 		$this->putInt(intval($this->z * 32));
-		$this->putByte(($this->yaw / 360) << 8);
-		$this->putByte(($this->pitch / 360) << 8);
+		//1.8 angles are single bytes: degrees * 256 / 360
+		$this->putByte(((int) ($this->yaw * 256 / 360)) & 0xFF);
+		$this->putByte(((int) ($this->pitch * 256 / 360)) & 0xFF);
 		$this->putShort($this->item);
 		$this->put(Binary::writeMetadata($this->metadata));
 	}

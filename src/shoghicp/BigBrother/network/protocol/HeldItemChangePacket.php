@@ -18,36 +18,20 @@
 namespace shoghicp\BigBrother\network\protocol;
 
 use shoghicp\BigBrother\network\Packet;
-use shoghicp\BigBrother\utils\Binary;
 
-class SpawnObjectPacket extends Packet{
+class HeldItemChangePacket extends Packet{
 
-	public $eid;
-	public $type;
-	public $x;
-	public $y;
-	public $z;
-	public $yaw;
-	public $pitch;
-	public $data = "";
+	public $slot;
 
 	public function pid(){
-		return 0x0e;
+		return 0x09;
 	}
 
 	public function encode(){
-		$this->putVarInt($this->eid);
-		$this->putByte($this->type);
-		$this->putInt(intval($this->x * 32));
-		$this->putInt(intval($this->y * 32));
-		$this->putInt(intval($this->z * 32));
-		//1.8 spawn object order is PITCH then YAW, each degrees * 256 / 360
-		$this->putByte(((int) ($this->pitch * 256 / 360)) & 0xFF);
-		$this->putByte(((int) ($this->yaw * 256 / 360)) & 0xFF);
-		$this->putInt(0); //TODO: extra data
+
 	}
 
 	public function decode(){
-
+		$this->slot = $this->getShort();
 	}
 }

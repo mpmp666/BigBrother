@@ -34,24 +34,44 @@ class OpenWindowPacket extends Packet{
 
 	public function encode(){
 		$this->putByte($this->windowID);
-		$type = "";
+		//MPMPESCore InventoryType constants -> 1.8 window type strings
 		switch($this->inventoryType){
-			case 0:
+			case 0: //CHEST
 				$type = "minecraft:chest";
 				break;
-			case 1:
-				$type = "minecraft:crafting_table";
-				break;
-			case 2:
+			case 3: //FURNACE
 				$type = "minecraft:furnace";
 				break;
-			//TODO: http://wiki.vg/Inventory#Windows
+			case 5: //WORKBENCH
+				$type = "minecraft:crafting_table";
+				break;
+			case 7: //BREWING_STAND
+				$type = "minecraft:brewing_stand";
+				break;
+			case 8: //ANVIL
+				$type = "minecraft:anvil";
+				break;
+			case 9: //ENCHANT_TABLE
+				$type = "minecraft:enchanting_table";
+				break;
+			case 10: //DISPENSER
+				$type = "minecraft:dispenser";
+				break;
+			case 11: //DROPPER
+				$type = "minecraft:dropper";
+				break;
+			case 12: //HOPPER
+				$type = "minecraft:hopper";
+				break;
+			default:
+				$type = "minecraft:chest";
+				break;
 		}
 		$this->putString($type);
 		$this->putString($this->windowTitle);
 		$this->putByte($this->slots);
-		$this->putByte($this->useTitle ? 1 : 0);
-		if($this->windowID === 11){
+		//1.8 has no useTitle byte; entityId only follows for horse inventories
+		if($type === "EntityHorse"){
 			$this->putInt($this->entityId);
 		}
 	}

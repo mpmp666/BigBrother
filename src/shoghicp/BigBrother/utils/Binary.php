@@ -61,7 +61,8 @@ class Binary extends \pocketmine\utils\Binary{
 						$m .= self::writeShort($item->getId());
 						$m .= self::writeByte($item->getCount());
 						$m .= self::writeShort($item->getDamage());
-						$m .= self::writeShort(-1);
+						//1.8 metadata slot ends with optional NBT: 0x00 = none
+						$m .= chr(0);
 					}
 					break;
 				case 6:

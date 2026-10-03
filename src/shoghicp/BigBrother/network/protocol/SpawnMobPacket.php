@@ -45,9 +45,10 @@ class SpawnMobPacket extends Packet{
 		$this->putInt(intval($this->x * 32));
 		$this->putInt(intval($this->y * 32));
 		$this->putInt(intval($this->z * 32));
-		$this->putByte(($this->yaw / 360) << 8);
-		$this->putByte(($this->pitch / 360) << 8);
-		$this->putByte(($this->headPitch / 360) << 8);
+		//1.8 angles are single bytes: degrees * 256 / 360
+		$this->putByte(((int) ($this->yaw * 256 / 360)) & 0xFF);
+		$this->putByte(((int) ($this->pitch * 256 / 360)) & 0xFF);
+		$this->putByte(((int) ($this->headPitch * 256 / 360)) & 0xFF);
 		$this->putShort($this->velocityX * 8000);
 		$this->putShort($this->velocityY * 8000);
 		$this->putShort($this->velocityZ * 8000);

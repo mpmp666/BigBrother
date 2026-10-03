@@ -93,9 +93,59 @@ abstract class Packet extends \stdClass{
 		}else{
 			$count = $this->getByte();
 			$damage = $this->getShort();
-			//1.8 slot format has NO NBT-length field (that is 1.7); the plugin
-			//also never sends NBT on the PC side, so nothing more to read.
+			//1.8 slot NBT: a single 0x00 byte means "no NBT", otherwise a full
+			//TAG_Compound follows (no length prefix). Skip it if present.
+			if(!$this->feof()){
+				$this->skipNbt();
+			}
 			return Item::get($itemId, $damage, $count);
+		}
+	}
+
+	/**
+	 * Skips over a 1.8 "optional NBT" field: either a lone 0x00 byte, or a
+	 * complete unnamed-compound NBT structure (big-endian).
+	 */
+	protected function skipNbt(){
+		$type = $this->getByte();
+		if($type === 0){
+			return; //no NBT present
+		}
+		//tag name
+		$nameLen = $this->getShort();
+		$this->get($nameLen);
+		$this->skipNbtPayload($type);
+	}
+
+	protected function skipNbtPayload($type){
+		switch($type){
+			case 1: $this->get(1); break;
+			case 2: $this->get(2); break;
+			case 3: $this->get(4); break;
+			case 4: $this->get(8); break;
+			case 5: $this->get(4); break;
+			case 6: $this->get(8); break;
+			case 7: $n = $this->getInt(); if($n > 0){ $this->get($n); } break;
+			case 8: $n = $this->getShort(); if($n > 0){ $this->get($n); } break;
+			case 9:
+				$elem = $this->getByte();
+				$n = $this->getInt();
+				for($i = 0; $i < $n and $elem !== 0; ++$i){
+					$this->skipNbtPayload($elem);
+				}
+				break;
+			case 10:
+				while(!$this->feof()){
+					$t = $this->getByte();
+					if($t === 0){
+						break;
+					}
+					$l = $this->getShort();
+					$this->get($l);
+					$this->skipNbtPayload($t);
+				}
+				break;
+			case 11: $n = $this->getInt(); if($n > 0){ $this->get($n * 4); } break;
 		}
 	}
 
@@ -106,6 +156,9 @@ abstract class Packet extends \stdClass{
 			$this->putShort($item->getId());
 			$this->putByte($item->getCount());
 			$this->putShort($item->getDamage());
+			//1.8 optional NBT: a single 0x00 (TAG_End) marks "no NBT". Without
+			//this byte the client misreads the next field as an NBT tag.
+			$this->putByte(0);
 		}
 	}
 
@@ -122,6 +175,10 @@ abstract class Packet extends \stdClass{
 	}
 
 	protected function getByte(){
+		if($this->offset >= strlen($this->buffer)){
+			$this->offset++;
+			return 0;
+		}
 		return ord($this->buffer[$this->offset++]);
 	}
 

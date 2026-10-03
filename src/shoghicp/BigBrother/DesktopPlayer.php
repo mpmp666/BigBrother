@@ -403,6 +403,45 @@ class DesktopPlayer extends Player{
 		$pk->skin = self::bigBrother_defaultSkin();
 		$pk->skinName = "Standard_Custom";
 		$this->handleDataPacket($pk);
+
+		//PC clients never send the MCPE packets that populate the hotbar link
+		//map; without it getItemInHand() resolves to an empty slot forever.
+		//Default to the identity mapping (hotbar slot i -> inventory slot i).
+		$inv = $this->getInventory();
+		for($i = 0; $i < $inv->getHotbarSize(); ++$i){
+			$inv->setHotbarSlotIndex($i, $i);
+		}
+	}
+
+	/**
+	 * 1.8 clients click "Respawn" on the death screen, which sends a
+	 * client-status packet. The MCPE core never handles an inbound respawn
+	 * packet, so the player is revived here directly.
+	 */
+	public function bigBrother_respawn(){
+		if($this->isAlive()){
+			return;
+		}
+
+		$this->setHealth($this->getMaxHealth());
+		$this->deadTicks = 0;
+		$this->extinguish();
+
+		$pos = $this->getSpawn();
+
+		//1.8 respawn sequence: Respawn packet reloads the world, then teleport
+		$pk = new \shoghicp\BigBrother\network\protocol\RespawnPacket();
+		$pk->dimension = 0;
+		$pk->gamemode = $this->getGamemode();
+		$pk->difficulty = $this->getServer()->getDifficulty();
+		$pk->levelType = "default";
+		$this->putRawPacket($pk);
+
+		$this->teleport($pos);
+		$this->inventory->sendContents($this);
+		$this->inventory->sendArmorContents($this);
+		$this->respawnToAll();
+		$this->sendSettings();
 	}
 
 	/**
